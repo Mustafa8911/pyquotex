@@ -3,11 +3,10 @@ from flask import Flask, request, jsonify
 from pyquotex.stable_api import Quotex
 import threading
 
-# === بيانات الدخول مباشرة ===
+# === إعداد بيانات الدخول ===
 EMAIL = "mustafa74833929@gmail.com"
 PASSWORD = "Mustafa8911220"
 TRADE_DURATION = 60  # مدة الصفقة بالثواني
-TRADE_AMOUNT = 3     # المبلغ لكل صفقة
 
 # === إدارة حالة كل أصل ===
 pairs_state = {}  # مثال: {"EURUSD": {"trade_no": 0}}
@@ -21,15 +20,9 @@ client = Quotex(email=EMAIL, password=PASSWORD)
 # === تسجيل الدخول ===
 async def connect():
     print("🔌 تسجيل الدخول إلى Quotex...")
-    try:
-        success = await client.connect()
-        if not success:
-            print("❌ فشل تسجيل الدخول. تحقق من البيانات أو الشبكة.")
-            return False
-    except Exception as e:
-        print(f"⚠️ خطأ أثناء تسجيل الدخول: {e}")
+    if not await client.connect():
+        print("❌ فشل تسجيل الدخول.")
         return False
-
     client.is_demo = True  # اختر DEMO أو REAL حسب الحساب
     print("✅ تم تسجيل الدخول بنجاح!")
     return True
@@ -41,6 +34,7 @@ async def execute_trade(asset, signal):
 
     pair = pairs_state[asset]
     pair["trade_no"] += 1
+    amount = 3  # ضع المبلغ الذي تريد استخدامه
 
     # تحويل إشارة TradingView إلى call/put
     direction_map = {"buy": "call", "sell": "put"}
@@ -49,15 +43,17 @@ async def execute_trade(asset, signal):
         print(f"⚠️ إشارة غير صحيحة: {signal}")
         return
 
-    print(f"📊 [{asset}] تنفيذ صفقة رقم {pair['trade_no']} بمبلغ {TRADE_AMOUNT}$ - الاتجاه: {direction}")
+    print(f"📊 [{asset}] تنفيذ صفقة رقم {pair['trade_no']} بمبلغ {amount}$ - الاتجاه: {direction}")
 
     try:
+        # فتح الصفقة
         status, order = await client.buy(
-            amount=TRADE_AMOUNT,
+            amount=amount,
             asset=asset,
             direction=direction,
             duration=TRADE_DURATION
         )
+
         if not status:
             print(f"⚠️ فشل فتح الصفقة على {asset}")
             return
@@ -77,15 +73,16 @@ def webhook():
 
     asset = data.get("asset")
     signal = data.get("signal")
+
     print(f"📥 [{asset}] إشارة مستلمة: {data}")
 
+    # تشغيل الصفقة في Thread منفصل
     threading.Thread(target=lambda: asyncio.run(execute_trade(asset, signal))).start()
+
     return jsonify({"status": f"Signal for {asset} received"}), 200
 
 # === تشغيل السيرفر ===
 if __name__ == "__main__":
-    if not asyncio.run(connect()):
-        print("❌ توقف السيرفر بسبب فشل تسجيل الدخول.")
-    else:
-        print("🚀 السيرفر يعمل على المنفذ 5050 ...")
-        app.run(host="0.0.0.0", port=5050)
+    asyncio.run(connect())
+    print("🚀 السيرفر يعمل على المنفذ 5050 ...")
+    app.run(host="0.0.0.0", port=5050)
