@@ -1,1 +1,1 @@
-from rsi_otc_bot import app
+CMD ["python", "rsi_otc_bot.py"]
