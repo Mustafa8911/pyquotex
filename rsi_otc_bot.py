@@ -99,5 +99,7 @@ def start_loop():
 
 threading.Thread(target=start_loop, daemon=True).start()
 
-print("🚀 السيرفر يعمل على المنفذ 5050 ...")
-app.run(host="0.0.0.0", port=5050)
+import os
+port = int(os.environ.get("PORT", 10000))
+print(f"🚀 السيرفر يعمل على المنفذ {port} ...")
+app.run(host="0.0.0.0", port=port)
