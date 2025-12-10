@@ -1,8 +1,7 @@
 import asyncio
 import json
 from aiohttp import web
-from pyquotex import Quotex
-
+from pyquotex.stable_api import Quotex
 EMAIL = "mustafa74833929@gmail.com"
 PASSWORD = "Mustafa8911220"
 
