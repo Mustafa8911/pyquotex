@@ -1,65 +1,83 @@
+import os
 import asyncio
 from aiohttp import web
 from pyquotex.stable_api import Quotex
 
-# ===== إعدادات الدخول =====
-EMAIL = "mustafa74833929@gmail.com"
-PASSWORD = "Mustafa8911220"
-ACCOUNT_MODE = "DEMO"
+# ======================
+# قراءة إعدادات من environment (مناسب لـ Render)
+# ======================
+EMAIL = os.environ.get("EMAIL", "mustafa74833929@gmail.com")
+PASSWORD = os.environ.get("PASSWORD", "Mustafa8911220")
+ACCOUNT_MODE = os.environ.get("ACCOUNT_MODE", "DEMO").upper()  # DEMO or REAL
 
-# ===== إعدادات التداول =====
-BASE_AMOUNT = 1.0
-MARTINGALE_MULTIPLIER = 2
-TRADE_DURATION = 60
-MAX_MARTINGALE = 5
+BASE_AMOUNT = float(os.environ.get("BASE_AMOUNT", "1.0"))
+MARTINGALE_MULTIPLIER = float(os.environ.get("MARTINGALE_MULTIPLIER", "2"))
+TRADE_DURATION = int(os.environ.get("TRADE_DURATION", "60"))  # بالثواني
+MAX_MARTINGALE = int(os.environ.get("MAX_MARTINGALE", "5"))
 
+# المنفذ الذي توفره Render في متغير PORT
+PORT = int(os.environ.get("PORT", "5050"))
+HOST = "0.0.0.0"
+
+# ======================
+# تهيئة مكتبة Quotex
+# ======================
 client = Quotex(email=EMAIL, password=PASSWORD)
 
 # لكل زوج مستوى خاص
 martingale_level = {}
 
-# لمعرفة هل هناك صفقة مفتوحة على الزوج
+# لمعرفة هل هناك صفقة مفتوحة على الزوج (store order_id)
 active_order = {}
 
-
-# ========== تسجيل الدخول ==========
+# ======================
+# تسجيل الدخول
+# ======================
 async def initialize_client():
-    await client.connect()
+    try:
+        await client.connect()
+        if ACCOUNT_MODE == "REAL":
+            await client.change_account("REAL")
+        else:
+            await client.change_account("PRACTICE")
+        print("✅ تم تسجيل الدخول بنجاح")
+        print(f"Mode={ACCOUNT_MODE}  BASE_AMOUNT={BASE_AMOUNT}  TRADE_DURATION={TRADE_DURATION}s  MAX_MART={MAX_MARTINGALE}")
+    except Exception as e:
+        print("❌ فشل تسجيل الدخول/الاتصال:", e)
+        raise
 
-    if ACCOUNT_MODE.upper() == "REAL":
-        await client.change_account("REAL")
-    else:
-        await client.change_account("PRACTICE")
 
-    print("✅ تم تسجيل الدخول بنجاح\n")
-
-
-# ========= أسرع طريقة للحصول على النتيجة ==========
-async def fast_check(order_id):
+# ======================
+# أسرع طريقة للحصول على نتيجة (poll every 0.5s)
+# ======================
+async def fast_check(order_id, timeout_seconds=90):
     """
-    يتحقق من نتيجة الصفقة كل 0.5 ثانية
-    بدون انتظار 60s كاملة
-    أسرع طريقة متوافقة مع pyquotex
+    يتحقق من نتيجة الصفقة كل 0.5 ثانية حتى timeout_seconds ثم يعيد None.
     """
-    for _ in range(180):  # 90 ثانية / 0.5 ثانية
+    attempts = int(timeout_seconds / 0.5)
+    for _ in range(attempts):
         try:
             res = await client.check_win(order_id)
             if res is not None:
                 return res
-        except:
-            pass
-
+        except Exception as e:
+            # تجاهل أخطاء مؤقتة
+            print("warn: check_win exception:", e)
         await asyncio.sleep(0.5)
-
     return None
 
 
-# ========== تنفيذ الصفقة ==========
+# ======================
+# تنفيذ الصفقة
+# ======================
 async def open_trade(asset, direction):
-
-    # منع فتح صفقة جديدة قبل انتهاء السابقة
+    """
+    يفتح صفقة إذا لم تكن هناك صفقة مفتوحة على نفس الزوج.
+    يقرأ النتيجة بسرعة (كل 0.5s) ويحدّث مارتنجال.
+    """
+    # منع فتح صفقة جديدة لزوج مفتوح
     if active_order.get(asset):
-        print(f"⛔ لا يمكن فتح صفقة جديدة — هناك صفقة مفتوحة على {asset}")
+        print(f"⛔ تجاهل الإشارة — توجد صفقة مفتوحة حالياً على {asset}")
         return
 
     level = martingale_level.get(asset, 0)
@@ -75,7 +93,7 @@ async def open_trade(asset, direction):
         return
 
     if not status or order is None:
-        print("❌ فشل إرسال الصفقة")
+        print("❌ فشل إرسال الصفقة (status false أو order is None)")
         return
 
     order_id = order.get("id")
@@ -83,65 +101,103 @@ async def open_trade(asset, direction):
         print("⚠ لا يوجد order_id — لا يمكن متابعة الصفقة")
         return
 
-    # نُسجّل الصفقة كصفقة مفتوحة
+    # سجل أن هناك صفقة نشطة لهذا الزوج
     active_order[asset] = order_id
+    print(f"⏳ صفقة مفتوحة order_id={order_id} — التحقق السريع من النتيجة...")
 
-    print("⏳ التحقق السريع من نتيجة الصفقة...")
+    # تحقق سريع للحصول على النتيجة بأقصر وقت ممكن
+    result = await fast_check(order_id, timeout_seconds=90)
 
-    result = await fast_check(order_id)
-
-    # عند الحصول على النتيجة — نحذف حالة الصفقة المفتوحة
+    # إفراغ حالة الصفقة حتى نسمح بإشارات لاحقة
     active_order[asset] = None
 
     if result is None:
-        print("⚠ لم يتم الحصول على النتيجة")
+        print("⚠ لم يتم الحصول على نتيجة الصفقة ضمن المهلة. لم يتغير مستوى المارتنجال.")
         return
 
-    # ======== تحليل النتيجة ============
-    if result > 0:
-        print(f"🏆 ربح: +{result} — reset")
+    # بعض إصدارات API قد ترجع True/False بدلاً من رقم ربح: نتعامل مع ذلك
+    profit = 0
+    if isinstance(result, bool):
+        profit = 1 if result else 0
+    else:
+        try:
+            profit = float(result)
+        except Exception:
+            # إذا لم نتمكن من تحويلها نعاملها كـ 0
+            profit = 0
+
+    if profit > 0:
+        print(f"🏆 ربح: +{profit} — إعادة المارتنجال إلى 0")
         martingale_level[asset] = 0
     else:
-        martingale_level[asset] = min(martingale_level.get(asset, 0) + 1, MAX_MARTINGALE)
-        print(f"❌ خسارة — المستوى الجديد {martingale_level[asset]}")
+        new_level = min(martingale_level.get(asset, 0) + 1, MAX_MARTINGALE)
+        martingale_level[asset] = new_level
+        print(f"❌ خسارة — المستوى الجديد = {martingale_level[asset]}")
 
 
-# ========== webhook ==========
+# ======================
+# Webhook handler
+# ======================
 async def handle_webhook(request):
-    data = await request.json()
+    """
+    تتوقع JSON: {"asset": "EURUSD", "signal": "buy"}
+    يدعم buy/sell (أو call/put) ويدشّن open_trade في مهمة غير متزامنة.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
 
     asset = data.get("asset")
     signal = data.get("signal")
 
     if not asset or not signal:
-        return web.json_response({"error": "Invalid signal"})
+        return web.json_response({"error": "Missing asset or signal"}, status=400)
 
-    direction = "call" if signal.lower() == "buy" else "put"
+    s = signal.lower()
+    if s in ("buy", "long", "call"):
+        direction = "call"
+    elif s in ("sell", "short", "put"):
+        direction = "put"
+    else:
+        return web.json_response({"error": "Invalid signal value"}, status=400)
 
-    # إطلاق الصفقة
+    # إطلاق تنفيذ الصفقة في مهمة موازية
     asyncio.create_task(open_trade(asset, direction))
 
-    return web.json_response({"status": "received"})
+    return web.json_response({"status": "accepted"})
 
 
-# ========== تشغيل السيرفر ==========
+# ======================
+# Health check (Render)
+# ======================
+async def handle_root(request):
+    return web.Response(text="OK")
+
+
+# ======================
+# تشغيل الخادم
+# ======================
 async def start_server():
     await initialize_client()
 
     app = web.Application()
+    app.router.add_get("/", handle_root)        # health check
     app.router.add_post("/hook", handle_webhook)
-
-    print("🚀 Webhook جاهز:")
-    print("http://0.0.0.0:5050/hook")
-    print("https://vmfjfnfkfldlfld.org/hook")
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 5050)
+    site = web.TCPSite(runner, HOST, PORT)
     await site.start()
 
+    print(f"🚀 Webhook جاهز على http://{HOST}:{PORT}/hook")
+    # Keep running
     while True:
         await asyncio.sleep(3600)
 
 
-asyncio.run(start_server())
+if __name__ == "__main__":
+    try:
+        asyncio.run(start_server())
+    except KeyboardInterrupt:
+        print("🔵 Shutting down.")
